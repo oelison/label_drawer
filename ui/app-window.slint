@@ -1,0 +1,44 @@
+import { Button, VerticalBox, LineEdit, ComboBox } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    out property <string> label-text: "The quick brown fox jumps over the lazy dog!";
+    out property <int> font-index: 0;
+    in property <image> previewimage;
+    in-out property <int> print-width: 0;
+    in-out property <[string]> fonts;
+    callback request-create-label();
+    callback request-print-label();
+    
+    VerticalBox {
+        Text {
+            text: print-width;
+        }
+        ComboBox {
+            model: root.fonts;
+            current-index <=> root.font-index;
+        }
+        LineEdit {
+            text: root.label-text;
+            edited(text) => {
+                root.label-text = text;
+            }
+        }
+        Image {
+            width: 2000px;
+            height: 96px;
+            source: root.previewimage;
+        }
+        Button {
+            text: "Create label and send to printer.";
+            clicked => {
+                root.request-create-label();
+            }
+        }
+        Button {
+            text: "Print";
+            clicked => {
+                root.request-print-label();
+            }
+        }
+    }
+}
