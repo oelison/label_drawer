@@ -1,15 +1,30 @@
-import { Button, VerticalBox, LineEdit, ComboBox } from "std-widgets.slint";
+import { Button, VerticalBox, LineEdit, ComboBox, HorizontalBox } from "std-widgets.slint";
 
 export component AppWindow inherits Window {
     out property <string> label-text: "The quick brown fox jumps over the lazy dog!";
     out property <int> font-index: 0;
     in property <image> previewimage;
+    in-out property <string> image-path: "";
     in-out property <int> print-width: 0;
     in-out property <[string]> fonts;
     callback request-create-label();
     callback request-print-label();
+    callback load-image();
+    
     
     VerticalBox {
+        HorizontalBox {
+            Button {
+                width: 50px;
+                text: "...";
+                clicked => {
+                    root.load-image();
+                }
+            }
+            LineEdit {
+                text <=> root.image-path;
+            }
+        }
         Text {
             text: print-width;
         }

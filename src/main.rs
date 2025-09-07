@@ -3,11 +3,13 @@
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::json;
 use reqwest::blocking::Client;
-use image::{Luma, ImageBuffer};
+use image::{GenericImageView, Luma, ImageBuffer, imageops::{self, FilterType, dither, BiLevel}};
 use rusttype::{Font, Scale};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer, ModelRc, VecModel, SharedString};
 use std::{fs, fs::File, io::Read};
 use ttf_parser::Face;
+use rfd::FileDialog;
+use std::env;
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -22,7 +24,7 @@ struct FontEntry {
     path: String,
 }
 
-/// Hilfsfunktion: findet alle Unterordner eines Verzeichnisses
+/// helper function: find all subdirectories of a directory
 fn find_subdirs_recursively(dir: &Path) -> Vec<PathBuf> {
     let mut subdirs = Vec::new();
     if let Ok(entries) = fs::read_dir(dir) {
@@ -30,7 +32,7 @@ fn find_subdirs_recursively(dir: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 subdirs.push(path.clone());
-                // rekursiv Unterordner hinzufügen
+                // add recursiv subdirs
                 subdirs.extend(find_subdirs_recursively(&path));
             }
         }
@@ -38,7 +40,7 @@ fn find_subdirs_recursively(dir: &Path) -> Vec<PathBuf> {
     subdirs
 }
 
-/// Liefert eine Liste von typischen Font-Verzeichnissen für das aktuelle OS
+/// get list of common font directories for the current OS
 fn get_system_font_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -69,7 +71,7 @@ fn get_system_font_dirs() -> Vec<PathBuf> {
 
         // ---------------- Fallback ----------------
         other => {
-            eprintln!("⚠️ Unbekanntes OS: {} – keine Font-Verzeichnisse definiert", other);
+            eprintln!("unknown OS: {} – no font dirs estimated", other);
         }
     }
 
@@ -85,24 +87,24 @@ fn get_system_font_dirs() -> Vec<PathBuf> {
 fn main() -> Result<(), Box<dyn Error>> {
     let ui = AppWindow::new()?;
 
-    // Fonts scannen (Beispielordner anpassen!)
+    // scan fonts
     let font_dirs = get_system_font_dirs();
     let mut font_entries: Vec<FontEntry> = Vec::new();
     let mut font_names: Vec<SharedString> = Vec::new();
     let mut seen_fonts = HashSet::new();
     for font_dir in font_dirs {
-        println!("Scanne Verzeichnis: {}", font_dir.display());
+        println!("Scan folder: {}", font_dir.display());
         if let Ok(entries) = fs::read_dir(font_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if ext.eq_ignore_ascii_case("ttf") {
-                        // Lade Datei
+                        // load font file
                         if let Ok(mut file) = File::open(&path) {
                             let mut data = Vec::new();
                             if file.read_to_end(&mut data).is_ok() {
                                 if let Ok(face) = Face::parse(&data, 0) {
-                                    // Name aus "name table"
+                                    // font name extraction
                                     let name = face
                                         .names()
                                         .into_iter()
@@ -114,7 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                                 .to_string_lossy()
                                                 .into_owned()
                                         });
-                                    // Deduplizieren
+                                    // deduplicate by name
                                     if seen_fonts.insert(name.clone()) {
                                         let entry = FontEntry {
                                             display_name: SharedString::from(name.clone()),
@@ -133,7 +135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     
-    // Jetzt alphabetisch sortieren
+    // sort alphabetically by display_name
     font_entries.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     let font_names: Vec<SharedString> = font_entries
         .iter()
@@ -141,7 +143,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect();
 
 
-    // Fonts in UI setzen
+    // set font names in UI
     ui.set_fonts(ModelRc::new(VecModel::from(font_names)));
 
     ui.on_request_create_label({
@@ -156,12 +158,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             if let Some(entry) = font_entries.get(font_index as usize) {
                 font_path = entry.path.clone();
                 println!(
-                    "Label '{}' mit Schrift: {} (Pfad: {})",
+                    "Label '{}' with font: {} (Path: {})",
                     label_text, entry.display_name, entry.path
                 );
             }
 
-            println!("Label '{}' mit Schrift: {}", label_text, font_path);
+            println!("Label '{}' with font: {}", label_text, font_path);
 
             let width = 2000;
             let height = 96;
@@ -182,28 +184,96 @@ fn main() -> Result<(), Box<dyn Error>> {
             let _ = print_image(length as u32);
         }
     });
+    ui.on_load_image({
+        let ui_handle = ui.as_weak();
+        move || {
+            let ui = ui_handle.unwrap();
+            let mut image_path = ui.get_image_path().to_string();
+            let mut start_folder = "";
+            if env::consts::OS == "windows" {
+                start_folder = "C:\\Users";
+            } else if env::consts::OS == "linux" {
+                start_folder = "~/";
+            } else if env::consts::OS == "macos" {
+                start_folder = "/Users";
+            }
+            if image_path.is_empty() || !Path::new(&image_path).exists() {
+                let file_dialog = FileDialog::new()
+                    .add_filter("Image Files", &["png", "jpg", "jpeg", "bmp", "gif"])
+                    .set_directory(start_folder)
+                    .set_title("pick image file")
+                    .pick_file();
+
+                let file_name = file_dialog
+                    .as_ref()
+                    .and_then(|path| path.to_str().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "ups".to_string());
+                ui.set_image_path(file_name.clone().into());
+                println!("image path: {}", file_name);
+                image_path = file_name;
+            }
+            println!("Load image: {}", image_path);
+            if Path::new(&image_path).exists() {
+                let img = image::open(&image_path);
+                match img {
+                    Ok(img) => {
+                        // target size
+                        let target_height = 96u32;
+                        let target_width = 2000u32;
+
+                        // scaler proportionally
+                        let (orig_w, orig_h) = img.dimensions();
+                        let scale = target_height as f32 / orig_h as f32;
+                        let new_w = (orig_w as f32 * scale).round() as u32;
+
+                        // scale image
+                        let resized = img.resize_exact(new_w, target_height, FilterType::Lanczos3).to_luma8();
+
+                        // dithern
+                        let mut dithered = resized.clone();
+                        dither(&mut dithered, &BiLevel);
+
+                        // create final image with white background
+                        let mut final_img = ImageBuffer::from_pixel(target_width, target_height, Luma([255u8]));
+                        imageops::replace(&mut final_img, &dithered, 0, 0);
+
+                        let byte_data = get_bitmap_data(final_img.clone(), target_height as usize, target_width as usize);
+                        let _ = write_image(byte_data);
+                        ui.set_print_width(new_w as i32);
+                        let slint_image = get_slint_img(final_img, target_height, target_width);
+                        ui.set_previewimage(slint_image);
+                        ui.set_image_path(image_path.into());
+                    }
+                    Err(e) => {
+                        eprintln!("Error during loading the image: {}", e);
+                    }
+                }
+            } else {
+                eprintln!("Path do not exist: {}", image_path);
+                ui.set_image_path("".into());
+            }
+        }
+    });
     ui.run()?;
     Ok(())
 }
 
 fn create_image_with_text(width: usize, height: usize, text: &str, font_path: &str, used_len: &mut usize) -> ImageBuffer<Luma<u8>, Vec<u8>> {
-    // Bildgröße
-    
+    // image buffer
     *used_len = 0;
-    // Leeres Bild erstellen
-    //let mut img = ImageBuffer::new(width as u32, height as u32);
+    // create white image
     let mut img = ImageBuffer::from_pixel(width as u32, height as u32, Luma([255u8]));
-    // Schriftart laden (hier eine eingebettete Schriftart verwenden)
-    let font_data = fs::read(font_path).expect("Fehler beim Laden der Schriftart");
+    // load font
+    let font_data = fs::read(font_path).expect("Error reading font file");
     let font = Font::try_from_bytes(&font_data).unwrap();
 
-    // Text skalieren
+    // scale the font
     let scale = Scale { x: 96.0, y: 96.0 };
 
-    // Startposition des Textes
+    // Text start position
     let start = rusttype::point(10.0, 71.0);
 
-    // Alle Glyphen korrekt layouten
+    // draw the text
     for glyph in font.layout(text, scale, start) {
         if let Some(bb) = glyph.pixel_bounding_box() {
             glyph.draw(|x, y, v| {
@@ -212,7 +282,7 @@ fn create_image_with_text(width: usize, height: usize, text: &str, font_path: &s
                 if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
                     let pixel: &mut Luma<u8> = img.get_pixel_mut(px as u32, py as u32);
                     if v > 0.5 {
-                        pixel[0] = 0; // Schwarz
+                        pixel[0] = 0; // black
                         if px as usize > *used_len {
                             *used_len = px as usize;
                         }
@@ -229,7 +299,7 @@ fn get_bitmap_data(img: ImageBuffer<Luma<u8>, Vec<u8>>, height: usize, width: us
     let mut packed: Vec<u8> = Vec::with_capacity((width * height).div_ceil(8));
     let mut current_byte = 0u8;
     let mut bit_pos = 0;
-    println!("Image dimensions: wxh {}x{}", width, height);
+    println!("Image dimensions: WxH {}x{}", width, height);
     for x in 0..width {
         for y in 0..height {
             let Luma([val]) = *img.get_pixel(x as u32, height as u32 - y as u32 - 1);
@@ -245,7 +315,6 @@ fn get_bitmap_data(img: ImageBuffer<Luma<u8>, Vec<u8>>, height: usize, width: us
         }
     }
     println!("Bit-packed length: {} bytes", packed.len());
-    println!("First 400 bytes: {:?}", &packed[0..4000.min(packed.len())]);
     packed
 }
 
@@ -285,13 +354,13 @@ fn write_image(bytesvec: Vec<u8>) -> Result<(), Box<dyn Error>> {
             .send()?;
 
         if !response.status().is_success() {
-            eprintln!("Fehler beim UploadJson, Index {}: {}", index, response.status());
-            return Err("Upload fehlgeschlagen".into());
+            eprintln!("Error at UploadJson, Index {}: {}", index, response.status());
+            return Err("Upload failed".into());
         }
         index += CHUNK_SIZE;
     }
     
-    println!("UploadJson erfolgreich in {} Paketen!", index);
+    println!("UploadJson successfully in {} blocks!", index);
 
     Ok(())
 
